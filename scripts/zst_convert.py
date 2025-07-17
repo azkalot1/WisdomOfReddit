@@ -17,7 +17,8 @@ import sys
 import csv
 from datetime import datetime
 import logging.handlers
-
+import dotenv
+dotenv.load_dotenv()
 
 # if you want a custom set of fields, put them in the following list. If you leave it empty the script will use a default set of fields
 fields = []

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 from .state import RedditContent
 from dataclasses import asdict
-from wisdomofreddit.analysis.prescoring import RelevancePredictor
+from internetwisdom.analysis.prescoring import RelevancePredictor
 
 class SentimentPrescorer(ABC):
     """
