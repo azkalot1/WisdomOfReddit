@@ -27,6 +27,8 @@ from internetwisdom.analysis.prescoring import (
     create_default_featurizer,
     RelevancePredictor,
 )
+import dotenv
+dotenv.load_dotenv()
 
 # Set up logging
 logging.basicConfig(

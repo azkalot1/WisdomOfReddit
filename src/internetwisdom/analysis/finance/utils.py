@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tabnanny import verbose
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -14,79 +15,27 @@ from typing import Sequence, Dict, Any
 import seaborn as sns
 
 
-
-def prepare_single_stock_data(ticker, date_b, date_e, consensus_storage, financial_data, 
-                              window_short=7, window_long=21, use_log_transform=False):
-    """
-    Loads, processes, and merges sentiment and financial data for a single stock.
-    Accepts EMA window sizes as arguments.
-    """
-    ticker_data = consensus_storage.local_storage.get_ticker_history(ticker, date_b, date_e)
-    if not ticker_data:
-        return None
-
-    sentiment_data = [
-        {
-            'Date': s.date, 
-            'net_conviction_score': (
-                s.conviction_weighted_bullish_score / s.sentiment_distribution.get('bullish', 1) - s.conviction_weighted_bearish_score /  s.sentiment_distribution.get('bearish', 1)
-            ),
-            'total_mentions': s.total_mentions,
-            'avg_confidence': s.avg_confidence,
-            'avg_sentiment_intensity': s.avg_sentiment_intensity,
-            'unique_submissions': s.unique_submissions
-        } 
-            for s in ticker_data
-        ]
-    
-    sentiment_df = pd.DataFrame(sentiment_data)
-    if sentiment_df.empty:
-        return None
-        
-    sentiment_df['Date'] = pd.to_datetime(sentiment_df['Date'])
-    sentiment_df.set_index('Date', inplace=True)
-    
-    full_date_range = pd.date_range(start=pd.to_datetime(date_b), end=pd.to_datetime(date_e), freq='D')
-    sentiment_df = sentiment_df.reindex(full_date_range).fillna(0)
-    
-    if use_log_transform:
-        sentiment_df['predictor_score'] = np.sign(sentiment_df['net_conviction_score']) * np.log1p(np.abs(sentiment_df['net_conviction_score']))
-    else:
-        sentiment_df['predictor_score'] = sentiment_df['net_conviction_score']
-
-    # Use the passed-in arguments for window sizes
-    sentiment_df['predictor_ema_short'] = sentiment_df['predictor_score'].ewm(span=window_short, adjust=True).mean()
-    sentiment_df['predictor_ema_long'] = sentiment_df['predictor_score'].ewm(span=window_long, adjust=True).mean()
-    
-    f_data_slice = financial_data[financial_data.Ticker.eq(ticker)]
-    if f_data_slice.empty:
-        print(f"Warning: No financial data found for ticker {ticker}. Skipping.")
-        return None
-        
-    merged_df = sentiment_df.reset_index().rename(columns={'index': 'Date'})
-    merged_df = merged_df.merge(f_data_slice, on='Date', how='left')
-    
-    return merged_df
-
 def analyze_and_plot_stock(ticker, date_b, date_e, consensus_storage, financial_data, 
-                           window_short=7, window_long=21, horizon_days=5, use_log_transform=False, filter_non_zero_mention=False):
+                           ema_window=7, horizon_days=5, use_log_transform=False, filter_non_zero_mention=False):
     """
     Generates a full suite of analysis plots for a given stock.
     Allows for custom EMA window sizes.
     """
-    df = prepare_single_stock_data(
-        ticker, date_b, date_e, consensus_storage, financial_data,
-        window_short=window_short,      # Pass arguments down
-        window_long=window_long,        # Pass arguments down
+    df = prepare_base_stock_data(
+        ticker, date_b, date_e,
+        consensus_storage, financial_data,
         use_log_transform=use_log_transform
     )
-    
+
     if df is None:
         print(f"Could not generate data for {ticker}.")
         return
 
-    print(f"--- Generating Analysis Plots for {ticker} (Windows: {window_short}/{window_long}) ---")
+    print(f"--- Generating Analysis Plots for {ticker} (Window: {ema_window}) ---")
     
+    # Use the passed-in arguments for window sizes
+    df['predictor_score'] = df['predictor_score'].ewm(span=ema_window, adjust=True).mean()
+
     # The rest of the plotting code remains the same...
     plot_df = df.dropna(subset=['Open', 'Close', 'High', 'Low']).copy()
     if filter_non_zero_mention:
@@ -95,21 +44,21 @@ def analyze_and_plot_stock(ticker, date_b, date_e, consensus_storage, financial_
     fig1.add_trace(
         go.Candlestick(x=plot_df['Date'], open=plot_df['Open'], high=plot_df['High'], low=plot_df['Low'], close=plot_df['Close'], name=f'{ticker} Price'), secondary_y=False)
     fig1.add_trace(
-        go.Scatter(x=plot_df['Date'], y=plot_df['predictor_ema_short'], name='Sentiment EMA', line=dict(color='purple')), secondary_y=True)
+        go.Scatter(x=plot_df['Date'], y=plot_df['predictor_score'], name= f"{ema_window}-days EMA of conviction score", line=dict(color='purple')), secondary_y=True)
     fig1.update_layout(title_text=f"Test 1: Sentiment Overlay for {ticker}")
     fig1.show()
 
 
     plot_df[f'forward_return_{horizon_days}d'] = (plot_df['Close'].shift(-horizon_days) - plot_df['Close']) / plot_df['Close'] * 100
-    scatter_df = plot_df.dropna(subset=['predictor_ema_short', f'forward_return_{horizon_days}d']).copy()
+    scatter_df = plot_df.dropna(subset=['predictor_score', f'forward_return_{horizon_days}d']).copy()
     scatter_df['year'] = scatter_df['Date'].dt.year.astype(str)
     fig4 = px.scatter(
         scatter_df,
-        x='predictor_ema_short',
+        x='predictor_score',
         color='year',
         y=f'forward_return_{horizon_days}d',
         title=f"Test 4: Sentiment Trend vs. Next {horizon_days}-Day Forward Return (%) for {ticker}",
-        labels={'predictor_ema_short': "Today's Net Conviction EMA", f'forward_return_{horizon_days}d': f"Forward {horizon_days}-Day Return (%)"},
+        labels={'predictor_score': f"{ema_window}-days EMA of conviction score", f'forward_return_{horizon_days}d': f"Forward {horizon_days}-Day Return (%)"},
         trendline="ols"
     )
     fig4.show()
@@ -121,7 +70,7 @@ def prepare_base_stock_data(ticker, date_b, date_e, consensus_storage, financial
     This includes loading from storage, reindexing, and merging with financial data.
     It does NOT calculate any EMAs.
     """
-    ticker_data = consensus_storage.local_storage.get_ticker_history(ticker, date_b, date_e)
+    ticker_data = consensus_storage.get_ticker_history(ticker, date_b, date_e)
     if not ticker_data:
         return None
 
@@ -131,7 +80,7 @@ def prepare_base_stock_data(ticker, date_b, date_e, consensus_storage, financial
             'net_conviction_score': (
                 s.conviction_weighted_bullish_score / s.sentiment_distribution.get('bullish', 1) - s.conviction_weighted_bearish_score /  s.sentiment_distribution.get('bearish', 1)
             ),
-            'total_mentions': s.total_mentions,
+            'total_mentions': s.sentiment_distribution.get('bullish', 0) + s.sentiment_distribution.get('bearish', 0),
             'avg_confidence': s.avg_confidence,
             'avg_sentiment_intensity': s.avg_sentiment_intensity,
             'unique_submissions': s.unique_submissions
@@ -392,7 +341,9 @@ def plot_rolling_signal_diagnostics(
     horizon_days=10,          # The forward return horizon to predict
     use_log_transform=False,
     filter_non_zero_mention=False,
-    min_sentiment_days_in_window=30
+    min_sentiment_days_in_window=30,
+    model_type='OLS',  # Model type to use for regression (e.g., 'OLS', 'WLS')
+    step_size=5  # How many days to step forward for each rolling window
 ):
     """
     Performs a walk-forward analysis by fitting a model on a rolling window of past data.
@@ -422,7 +373,7 @@ def plot_rolling_signal_diagnostics(
     
     # 2. Iterate through time (weekly steps for efficiency)
     # We start after the first full rolling window is available
-    for i in range(rolling_window_days, len(analysis_df), 5): # Step by 5 days (approx. 1 week)
+    for i in range(rolling_window_days, len(analysis_df), step_size): # Step by 5 days (approx. 1 week)
         current_date = analysis_df.index[i]
         window_start_date = analysis_df.index[i - rolling_window_days]
         
@@ -439,7 +390,17 @@ def plot_rolling_signal_diagnostics(
         y = window_df[outcome_col]
         
         try:
-            model = sm.OLS(y, X).fit()
+            if model_type == 'OLS':
+                model = sm.OLS(y, X).fit()
+            elif model_type == 'WLS':
+                lam = np.log(2) / (rolling_window_days/2)
+                weight_fn = lambda n: np.exp(-lam * np.arange(n)[::-1])
+                wts = weight_fn(len(X))
+                wts = wts * np.sqrt(1 + window_df["total_mentions"])  # Scale weights by total mentions
+                wts = wts / wts.sum()  # normalize weights to sum to 1
+                model = sm.WLS(y, X, weights=wts).fit(cov_type="HAC", cov_kwds={"maxlags": horizon_days})
+            else:
+                raise ValueError(f"Unsupported model type: {model_type}")
             
             # 4. Extract and store the model's statistics
             rolling_results.append({
@@ -519,258 +480,6 @@ def calculate_position_size(capital, base_position_pct, r_squared,
     
     return capital * adjusted_position_pct
 
-def run_walk_forward_backtest(
-    ticker,
-    date_b,
-    date_e,
-    consensus_storage,
-    financial_data,
-    # --- Parameters for the adaptive model ---
-    rolling_window_days=252,
-    min_training_days=45,
-    re_fit_frequency_days=21,
-    ema_window=10,
-    horizon_days=15,
-    embargo_days=5,  # NEW: The gap between training and prediction
-    p_value_threshold=0.10,
-    # --- Parameters for the backtest execution ---
-    initial_capital=10000,
-    position_size_pct=0.5,
-    min_position_pct=0.1,
-    max_position_pct=0.8,
-    r_squared_scaling_factor=2.0,
-    entry_threshold_abs=2.0,
-    use_r_squared_sizing=True,
-    use_log_transform=False,
-    filter_non_zero_mention=False,
-    min_sentiment_days_in_window=30
-
-):
-    """
-    Runs a backtest using a walk-forward methodology with a proper embargo period
-    to prevent lookahead bias.
-    """
-    print(f"--- Running Walk-Forward Backtest for {ticker} with {embargo_days}-day embargo ---")
-    
-    # --- 1. Prepare Base Data & Engineer Features ---
-    df = prepare_base_stock_data(ticker, date_b, date_e, consensus_storage, financial_data, use_log_transform)
-    if df is None or df.empty:
-        return {"error": f"Could not prepare base data for {ticker}."}
-
-    predictor_col = f'predictor_ema'
-    outcome_col = f'forward_return'
-    
-    df[predictor_col] = df['predictor_score'].ewm(span=ema_window, adjust=False).mean()
-    # This pre-calculation is efficient. We will be careful about how we use it.
-    df[outcome_col] = (df['Close'].shift(-horizon_days) - df['Close']) / df['Close'] * 100
-    df = df.dropna(subset=['Close', predictor_col]).set_index('Date')
-
-    # --- 2. Walk-Forward Model Fitting with Embargo ---
-    models_store = []
-    df['model_id'] = -1
-    model_id_counter = 0
-
-    # Start the loop after enough data has accumulated for the first full training window.
-    start_index = min_training_days + embargo_days + horizon_days
-    for i in range(start_index, len(df), re_fit_frequency_days):
-        # --- EMBARGO IMPLEMENTATION ---
-        prediction_start_date = df.index[i]
-        # The training data must end *before* the prediction period, separated by the embargo.
-        train_cutoff_date = prediction_start_date - pd.Timedelta(days=embargo_days + horizon_days)
-        # Define the training window based on this strict cutoff.
-        rolling_start_date = train_cutoff_date - pd.Timedelta(days=rolling_window_days)
-        train_start_date = max(df.index[0], rolling_start_date)
-        # Ensure the calculated start date is within the dataframe's bounds.
-        if train_start_date < df.index[0]: continue
-        train_window_df = df.loc[train_start_date:train_cutoff_date].copy()
-        # --- END EMBARGO IMPLEMENTATION ---
-        if len(train_window_df) < min_training_days: continue
-        # Now, we prepare the training data from this correctly isolated window.
-        if filter_non_zero_mention:
-            train_window_df = train_window_df.loc[train_window_df['total_mentions'].ge(1), :]   
-        X = sm.add_constant(train_window_df[predictor_col])
-        y = train_window_df[outcome_col]
-        model_data = pd.concat([X, y], axis=1).dropna()
-        if len(model_data) < min_sentiment_days_in_window: continue
-        # Fit the model on the clean, non-future-leaking data.
-        model = sm.OLS(model_data[outcome_col], model_data.drop(columns=outcome_col)).fit()
-        models_store.append({
-            'model_id': model_id_counter,
-            'train_start': model_data.index[0], 
-            'train_end': model_data.index[-1], # Store the actual end of training data
-            'prediction_start': prediction_start_date,
-            'is_significant': model.pvalues[predictor_col] < p_value_threshold,
-            'coefficient': model.params[predictor_col],
-            'p_value': model.pvalues[predictor_col],
-            'intercept': model.params['const'],
-            'r_squared': model.rsquared,
-            'n_samples': model_data.shape[0]
-        })
-        
-        # Apply this newly trained model to the upcoming prediction/test period.
-        prediction_end_date = df.index[min(i + re_fit_frequency_days - 1, len(df) - 1)]
-        df.loc[prediction_start_date:prediction_end_date, 'model_id'] = model_id_counter
-        model_id_counter += 1
-
-    # --- Sections 3 (Backtest Simulation) and 4 (Performance Analysis) ---
-    # The rest of the function remains exactly the same, as it correctly uses
-    # the 'model_id' column to apply the right model at the right time.
-    
-    if not models_store:
-        return {"error": "Could not generate any valid models."}
-    
-    models_df = pd.DataFrame(models_store).set_index('model_id')
-    df = df.reset_index().merge(models_df, on='model_id', how='left').set_index('Date')
-    df['predicted_return'] = df['intercept'] + (df['coefficient'] * df[predictor_col])
-    df.dropna(subset=['predicted_return'], inplace=True)
-    df = df.reset_index()
-    # return df, models_store
-    # ... (The simulation and performance analysis code from your original function goes here without changes) ...
-    # --- 3. Backtest Simulation Loop ---
-    capital = initial_capital
-    equity_curve = {df.iloc[0]['Date']: initial_capital}
-    trades = []
-    current_position = None
-
-    for i in range(1, len(df)):
-        date = df.loc[i, 'Date']
-        prev_date = df.loc[i-1, 'Date']
-        
-        # Update equity curve with current position value (mark-to-market)
-        if current_position:
-            current_price = df.loc[i, 'Close']  # Current market price
-            if current_position['position_type'] == 'long':
-                current_position_value = current_price * current_position['shares']
-            else:  # short position
-                # For short: profit when price goes down
-                unrealized_pnl = (current_position['entry_price'] - current_price) * current_position['shares']
-                current_position_value = current_position['entry_value'] + unrealized_pnl
-            
-            current_equity = capital + current_position_value  # capital is remaining cash
-        else:
-            current_equity = capital  # All cash, no positions
-        
-        equity_curve[date] = current_equity
-
-        # Check exit conditions
-        if current_position:
-            days_held = i - current_position['entry_idx']
-            
-            # Calculate current PnL for exit decision using SAME price as equity calculation
-            current_price = df.loc[i, 'Close']
-            if current_position['position_type'] == 'long':
-                current_pnl = (current_price - current_position['entry_price']) * current_position['shares']
-            else:
-                current_pnl = (current_position['entry_price'] - current_price) * current_position['shares']
-            
-            # Exit conditions: time-based OR stop-loss OR take-profit
-            should_exit = (days_held >= horizon_days) or (current_pnl < -current_position['entry_value'] * 0.25)  or (current_pnl > current_position['entry_value'] * 0.25)
-            
-            if should_exit:
-                # OPTION 1: Exit at current Close (immediate exit)
-                exit_price = current_price
-                final_pnl = current_pnl  # Already calculated above
-                
-                # OPTION 2: Exit at next day's Open (more realistic)
-                #if i + 1 < len(df):
-                #    exit_price = df.loc[i + 1, 'Open']
-                #    if current_position['position_type'] == 'long':
-                #        final_pnl = (exit_price - current_position['entry_price']) * current_position['shares']
-                #    else:
-                #        final_pnl = (current_position['entry_price'] - exit_price) * current_position['shares']
-                #else:
-                #     # Last day, use current close
-                #    exit_price = current_price
-                #   final_pnl = current_pnl
-                
-                # Return all capital (original position value + PnL)
-                capital += current_position['entry_value'] + final_pnl
-                
-                trades.append({
-                    'position_type': current_position['position_type'],
-                    'entry_date': current_position['entry_date'],
-                    'exit_date': date,  # or next day if using next day's open
-                    'entry_price': current_position['entry_price'],
-                    'exit_price': exit_price,
-                    'days_held': days_held,
-                    'pnl': final_pnl,
-                    'net_return': final_pnl / current_position['entry_value'],
-                    'model_id_used': current_position['model_id'],
-                    'position_size_pct_used': current_position['position_size_pct_used'],
-                    'entry_value': current_position['entry_value'],
-                    'shares': current_position['shares']
-                })
-                current_position = None
-
-        mask_position = current_position is None and df.loc[i, 'is_significant']
-        if filter_non_zero_mention:
-            mask_position = mask_position and df.loc[i, 'total_mentions'] >= 1
-        if current_position is None and df.loc[i, 'is_significant']:
-            predicted_return = df.loc[i, 'predicted_return']
-            r_squared = df.loc[i, 'r_squared']
-            
-            long_entry_thresh, short_entry_thresh = entry_threshold_abs, -entry_threshold_abs
-
-            position_type = None
-            if predicted_return > long_entry_thresh: position_type = 'long'
-            elif predicted_return < short_entry_thresh: position_type = 'short'
-
-            if position_type:
-                entry_price = df.loc[i, 'Close']
-                
-                # NEW: R-squared adjusted position sizing
-                if use_r_squared_sizing:
-                    position_size_dollars = calculate_position_size(
-                        capital=capital,
-                        base_position_pct=position_size_pct,
-                        r_squared=r_squared,
-                        min_position_pct=min_position_pct,  
-                        max_position_pct=max_position_pct, 
-                        r_squared_scaling_factor=r_squared_scaling_factor
-                    )
-                else:
-                    position_size_dollars = capital * position_size_pct
-                
-                if capital < position_size_dollars: 
-                    continue
-                
-                shares = position_size_dollars / entry_price
-                position_size_pct_used = position_size_dollars / capital
-                capital -= position_size_dollars
-                
-                current_position = {
-                    'position_type': position_type, 
-                    'entry_idx': i, 
-                    'entry_date': date,
-                    'entry_price': entry_price, 
-                    'shares': shares, 
-                    'entry_value': position_size_dollars,
-                    'model_id': df.loc[i, 'model_id'],
-                    'r_squared_used': r_squared,  # Track for analysis
-                    'position_size_pct_used': position_size_pct_used  # Track actual %
-                }
- 
-    # --- 4. Performance Analysis ---
-    if not trades: return {"error": "No trades were generated."}
-    trades_df = pd.DataFrame(trades)
-    equity_df = pd.Series(equity_curve).to_frame('Strategy')
-    final_capital = equity_df['Strategy'].iloc[-1]
-    total_strategy_return = (final_capital / initial_capital) - 1
-    equity_df['Buy & Hold'] = initial_capital * (df.set_index('Date')['Close'] / df['Close'].iloc[0])
-    buy_hold_return = (equity_df['Buy & Hold'].dropna().iloc[-1] / initial_capital) - 1
-    daily_returns = equity_df['Strategy'].pct_change().dropna()
-    if len(daily_returns) < 2: return {"error": "Not enough daily returns to calculate risk metrics."}
-    max_drawdown = (equity_df['Strategy'] / equity_df['Strategy'].cummax() - 1).min()
-    annualized_return = (1 + daily_returns.mean())**252 - 1
-    annualized_std = daily_returns.std() * np.sqrt(252)
-    sharpe_ratio = annualized_return / annualized_std if annualized_std > 0 else 0
-
-    return {
-        'ticker': ticker, 'total_trades': len(trades_df), 'win_rate_pct': (trades_df['pnl'] > 0).mean() * 100,
-        'total_strategy_return_pct': total_strategy_return * 100, 'buy_hold_return_pct': buy_hold_return * 100,
-        'excess_return_pct': (total_strategy_return - buy_hold_return) * 100, 'max_drawdown_pct': max_drawdown * 100,
-        'sharpe_ratio': sharpe_ratio, 'trades_df': trades_df, 'equity_curve_df': equity_df, 'sentiment_df': df, 'models_df': models_df
-    }
 
 def plot_equity_curve_v2(backtest_results):
     """
@@ -1254,9 +963,7 @@ def pick_model_this_slice(
     # example selection rule: largest absolute R²
     idx = sig["r_squared"].abs().idxmax()
 
-    return sig.loc[idx].copy()      # <-- <-- <-- avoid SettingWithCopyWarning
-
-
+    return sig.loc[idx].copy()
 
 
 def train_walk_forward_family(
@@ -1271,8 +978,9 @@ def train_walk_forward_family(
     p_value_threshold: float = 0.10,
     min_sentiment_days_in_window: int = 30,
     filter_non_zero_mention: bool = False,
-) -> Dict[str, Any]:
-    from statsmodels.stats.outliers_influence import OLSInfluence
+    model_type: str = 'OLS',
+    verbose: bool = False
+) -> Dict[str, pd.DataFrame]:
     """
     Returns:
         df_out        – original df + columns:
@@ -1285,13 +993,8 @@ def train_walk_forward_family(
     first_trade_dt = df_raw.loc[trade_mask, "Date"].iloc[0]
     df             = df_raw[df_raw["Date"] >= first_trade_dt].reset_index(drop=True)
     df = engineer_features(df, ema_windows, horizons)
-
     df.set_index("Date", inplace=True)
     df.sort_index(inplace=True)
-
-
-
-
 
     # 3.2  constants & containers -------------------------------------------
     lam = np.log(2) / decay_half_life
@@ -1340,24 +1043,26 @@ def train_walk_forward_family(
 
                 X = sm.add_constant(model_data[f"ema_{w}"])
                 y_vec = model_data[f"fwd_{h}d"]
-
                 wts = weight_fn(len(model_data))
-
-                # wts = wts * np.sqrt(1+model_data["total_mentions"].values)
-
-               #res = sm.WLS(y_vec, X, weights=wts).fit(
-                #    cov_type="HAC", cov_kwds={"maxlags": h}
-                #)
-                res = sm.OLS(y_vec, X).fit()
-                infl       = OLSInfluence(res) 
-                cooks_max  = infl.cooks_distance[0].max()
+                wts = wts * np.sqrt(1+model_data["total_mentions"])
+                wts = wts / wts.sum()  # normalize weights to sum to 1
+                if model_type == 'WLS':
+                    res = sm.WLS(y_vec, X, weights=wts).fit(
+                        cov_type="HAC", cov_kwds={"maxlags": h}
+                    )
+                elif model_type == 'OLS':
+                    res = sm.OLS(y_vec, X).fit()
+                else:
+                    raise ValueError(f"Unsupported model_type: {model_type}. Use 'WLS' or 'OLS'.")
                 share_nz   = (np.abs(x) > 1e-3).mean()
-                n_unique_vals = x.nunique()
-                mask = x.std(ddof=0) < 0.005 or share_nz < 0.2  or n_unique_vals < 20 or (cooks_max > 1)
-                #mask = x.std(ddof=0) < 0.005 or share_nz < 0.2  or n_unique_vals < 20
+                mask = x.std(ddof=0) < 0.005 or share_nz < 0.2  # or (cooks_max > 1)
                 if mask:  
-                #    # print(f'Skipping slice {pred_start}, {h}, {w}, {x.std(ddof=0):.2f}, {res.rsquared:.2f}, {share_nz:.2f}, {n_unique_vals}, {cooks_max}')
-                    continue  # skip slice
+                    if verbose:
+                        print(f"Skipping degenerate fit for date {pred_start}: span={w}, horizon={h}, "
+                            f"std={x.std(ddof=0):.4f}, "
+                            f"share_nz={share_nz:.2f}, "
+                        )
+                    continue  # skip slice, fit is degenerate
 
                 candidate_rows.append(
                     dict(
@@ -1377,8 +1082,7 @@ def train_walk_forward_family(
                         x_std=x.std(ddof=0),
                         n_unique_vals=x.nunique(),
                         rsquared_adj=res.rsquared_adj,
-                        share_nonzero=share_nz,
-                        cooks_max=cooks_max
+                        share_nonzero=share_nz
                     )
                 )
 
@@ -1414,10 +1118,7 @@ def train_walk_forward_family(
             + winner["coefficient"] * df.loc[pred_start:pred_end_date, f"ema_{winner['span']}"]
         )
 
-
-
     # 3.4 wrap-up
-    # models_df = pd.DataFrame(models_store).set_index("model_id")
     models_df = pd.DataFrame(models_store)
     return {"df": df.reset_index(), "models_df": models_df.set_index('model_id')}
 
@@ -1633,11 +1334,6 @@ def backtest_family_prediction(
     df["is_significant"] = (df["p_value"] < 0.10).fillna(False)
     if filter_non_zero_mention:
         df.loc[df["total_mentions"] < 1, "is_significant"] = False
-
-    #df = (df.groupby("Date", as_index=False)
-    #        .last()            # or .agg(…) if you want a different rule
-    #        .reset_index(drop=True))
-
     # ---------- 1. containers ----------
     capital = initial_capital
     equity_curve = {df.iloc[0]["Date"]: initial_capital}
@@ -1709,8 +1405,6 @@ def backtest_family_prediction(
 
             if pd.isna(sigma) or sigma == 0:
                 continue
-
-
 
             if pred > entry_threshold_abs:
                 side = "long"

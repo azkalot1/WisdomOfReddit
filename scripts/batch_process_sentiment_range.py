@@ -23,7 +23,8 @@ from internetwisdom.analysis.sentiment import (
 from internetwisdom.analysis.prescoring import (
     create_default_featurizer, RelevancePredictor
 )
-
+import dotenv
+dotenv.load_dotenv()
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO,

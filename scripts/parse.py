@@ -30,6 +30,8 @@ from internetwisdom.reddit import (
 )
 from internetwisdom.data import JsonFileStorage, FilePathManager, StorageConfig
 from internetwisdom import SubmissionProcessor, ProcessingResult
+import dotenv
+dotenv.load_dotenv()
 
 def setup_logging(verbose: bool = False):
     """Configure logging"""

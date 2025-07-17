@@ -22,7 +22,13 @@ dependencies = [
   "boto3",
   "tenacity",
   "lxml",
-  "scikit-learn"
+  "scikit-learn",
+  "torch",
+  "transformers",
+  "statsmodels",
+  "plotly",
+  "nbformat>=4.2.0",
+  "ipywidgets"
 ]
 
 [tool.setuptools]

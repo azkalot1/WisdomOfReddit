@@ -7,6 +7,8 @@ import argparse
 from datetime import datetime, date
 from typing import List, Optional
 import numpy as np
+import dotenv
+dotenv.load_dotenv()
 
 def get_all_tickers_fmp(api_key: str) -> List[str]:
     """
@@ -433,7 +435,10 @@ def main():
             # Show sample of data
             print(f"\n📋 Sample data:")
             print(financial_data.head(10))
-            
+            # delete _batch_ files if they exist
+            for file in os.listdir(output_dir):
+                if '_batch_' in file and file.endswith(".parquet"):
+                    os.remove(os.path.join(output_dir, file))
         except Exception as e:
             print(f"❌ Error saving file: {e}")
     else:

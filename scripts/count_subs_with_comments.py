@@ -22,7 +22,8 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import argparse
 import multiprocessing
-
+import dotenv
+dotenv.load_dotenv()
 
 def get_comment_count(data: Dict[str, Any]) -> int:
     """

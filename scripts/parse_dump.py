@@ -1,6 +1,8 @@
 from internetwisdom.reddit.comment_processing import RedditCSVConverter, CSVConverterConfig
 from pathlib import Path
 import logging
+import dotenv
+dotenv.load_dotenv()
 
 def main():
     """Main conversion script"""
